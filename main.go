@@ -55,17 +55,20 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 		body = r.PostFormValue("body")
 	}
 
-	// Fallback: Check if 'body' parameter contains URL-encoded parameters
+	// Fallback: Check if 'Body' parameter contains URL-encoded parameters
 	if messageSID == "" || fromNumber == "" || body == "" {
-		bodyParam := r.PostFormValue("body")
+		bodyParam := r.PostFormValue("Body") // Twilio Studio may send as 'Body'
+		if bodyParam == "" {
+			bodyParam = r.PostFormValue("body") // Fallback to lowercase
+		}
 		if bodyParam != "" {
 			// Remove leading '?' if present
 			bodyParam = strings.TrimPrefix(bodyParam, "?")
 			// Decode URL-encoded body
 			parsed, err := url.ParseQuery(bodyParam)
 			if err != nil {
-				logError("WEBHOOK_INVALID_BODY", fmt.Sprintf("Failed to parse body parameter: %v", err))
-				http.Error(w, "Invalid body parameter", http.StatusBadRequest)
+				logError("WEBHOOK_INVALID_BODY", fmt.Sprintf("Failed to parse Body parameter: %v, raw: %s", err, bodyParam))
+				http.Error(w, "Invalid Body parameter", http.StatusBadRequest)
 				return
 			}
 			if messageSID == "" {
@@ -91,7 +94,7 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required fields
 	if messageSID == "" || fromNumber == "" || body == "" {
-		logError("WEBHOOK_NO_INPUT", fmt.Sprintf("Missing required fields: MessageSid=%s, From=%s, Body=%s", messageSID, fromNumber, body))
+		logError("WEBHOOK_NO_INPUT", fmt.Sprintf("Missing required fields: MessageSid=%s, From=%s, Body=%s, raw Body param=%s", messageSID, fromNumber, body, r.PostFormValue("Body")))
 		http.Error(w, "Missing required fields", http.StatusBadRequest)
 		return
 	}
@@ -160,7 +163,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// MySQL connection
+	// MySQL Reflex
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPass, dbHost, dbPort, dbName)
 	var err error
 	db, err = sql.Open("mysql", dsn)
