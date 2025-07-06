@@ -91,20 +91,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Database connection setup
+	// Database and server configuration
 	dbUser := os.Getenv("DB_USERNAME")
 	dbPass := os.Getenv("DB_PASSWORD")
 	dbHost := os.Getenv("DB_HOST")
 	dbPort := os.Getenv("DB_PORT")
 	dbName := os.Getenv("DB_NAME")
 	listenPort := os.Getenv("LISTEN_PORT")
+	certFile := os.Getenv("CERT_FILE")
+	keyFile := os.Getenv("KEY_FILE")
 
-	if dbUser == "" || dbPass == "" || dbHost == "" || dbPort == "" || dbName == "" || listenPort == "" {
+	// Validate environment variables
+	if dbUser == "" || dbPass == "" || dbHost == "" || dbPort == "" || dbName == "" || listenPort == "" || certFile == "" || keyFile == "" {
 		logError("CONFIG_ERROR", "Missing required environment variables")
 		os.Exit(1)
 	}
 
-	// MySQL connection using DSN from your working program
+	// MySQL connection
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPass, dbHost, dbPort, dbName)
 	var err error
 	db, err = sql.Open("mysql", dsn)
@@ -121,6 +124,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Verify certificate and key files exist
+	if _, err := os.Stat(certFile); os.IsNotExist(err) {
+		logError("CONFIG_ERROR", fmt.Sprintf("Certificate file not found: %s", certFile))
+		os.Exit(1)
+	}
+	if _, err := os.Stat(keyFile); os.IsNotExist(err) {
+		logError("CONFIG_ERROR", fmt.Sprintf("Key file not found: %s", keyFile))
+		os.Exit(1)
+	}
+
 	// Initialize router
 	r := mux.NewRouter()
 	r.HandleFunc("/sms", handleSMS).Methods("POST")
@@ -128,10 +141,10 @@ func main() {
 	// Enable CORS and logging
 	loggedRouter := handlers.LoggingHandler(os.Stdout, r)
 
-	// Start server
-	log.Printf("Starting server on port %s", listenPort)
-	if err := http.ListenAndServe(":"+listenPort, loggedRouter); err != nil {
-		logError("SERVER_ERROR", fmt.Sprintf("Failed to start server: %v", err))
+	// Start HTTPS server
+	log.Printf("Starting HTTPS server on port %s", listenPort)
+	if err := http.ListenAndServeTLS(":"+listenPort, certFile, keyFile, loggedRouter); err != nil {
+		logError("SERVER_ERROR", fmt.Sprintf("Failed to start HTTPS server: %v", err))
 		os.Exit(1)
 	}
 }
