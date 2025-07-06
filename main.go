@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -34,6 +36,17 @@ func logError(errorType, message string) {
 
 // handleSMS handles incoming SMS webhooks from Twilio
 func handleSMS(w http.ResponseWriter, r *http.Request) {
+	// Log raw request body for debugging
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		logError("WEBHOOK_READ_BODY", fmt.Sprintf("Failed to read request body: %v", err))
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	// Restore body for subsequent parsing
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	log.Printf("Raw request body: %s", string(bodyBytes))
+
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
 		logError("WEBHOOK_INVALID_FORM", fmt.Sprintf("Failed to parse form data: %v", err))
@@ -55,11 +68,11 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 		body = r.PostFormValue("body")
 	}
 
-	// Fallback: Check if 'Body' parameter contains URL-encoded parameters
+	// Fallback 1: Check 'Body' or 'body' parameter for URL-encoded data
 	if messageSID == "" || fromNumber == "" || body == "" {
-		bodyParam := r.PostFormValue("Body") // Twilio Studio may send as 'Body'
+		bodyParam := r.PostFormValue("Body")
 		if bodyParam == "" {
-			bodyParam = r.PostFormValue("body") // Fallback to lowercase
+			bodyParam = r.PostFormValue("body")
 		}
 		if bodyParam != "" {
 			// Remove leading '?' if present
@@ -69,6 +82,38 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				logError("WEBHOOK_INVALID_BODY", fmt.Sprintf("Failed to parse Body parameter: %v, raw: %s", err, bodyParam))
 				http.Error(w, "Invalid Body parameter", http.StatusBadRequest)
+				return
+			}
+			if messageSID == "" {
+				messageSID = parsed.Get("MessageSid")
+				if messageSID == "" {
+					messageSID = parsed.Get("messagesid")
+				}
+			}
+			if fromNumber == "" {
+				fromNumber = parsed.Get("From")
+				if fromNumber == "" {
+					fromNumber = parsed.Get("from")
+				}
+			}
+			if body == "" {
+				body = parsed.Get("Body")
+				if body == "" {
+					body = parsed.Get("body")
+				}
+			}
+		}
+	}
+
+	// Fallback 2: Parse raw request body as URL-encoded data
+	if messageSID == "" || fromNumber == "" || body == "" {
+		// Try parsing the raw body as URL-encoded data
+		bodyParam := strings.TrimPrefix(string(bodyBytes), "?")
+		if bodyParam != "" {
+			parsed, err := url.ParseQuery(bodyParam)
+			if err != nil {
+				logError("WEBHOOK_INVALID_RAW_BODY", fmt.Sprintf("Failed to parse raw body: %v, raw: %s", err, bodyParam))
+				http.Error(w, "Invalid raw body", http.StatusBadRequest)
 				return
 			}
 			if messageSID == "" {
@@ -108,7 +153,7 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save to database
-	err := saveSMS(sms)
+	err = saveSMS(sms)
 	if err != nil {
 		logError("DB_SAVE_ERROR", fmt.Sprintf("Failed to save SMS to database: %v", err))
 		http.Error(w, "Failed to save message", http.StatusInternalServerError)
@@ -163,7 +208,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// MySQL Reflex
+	// MySQL connection
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPass, dbHost, dbPort, dbName)
 	var err error
 	db, err = sql.Open("mysql", dsn)
