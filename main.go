@@ -68,52 +68,18 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 		body = r.PostFormValue("body")
 	}
 
-	// Fallback 1: Check 'Body' or 'body' parameter for URL-encoded data
+	// Fallback: Check 'body' parameter for URL-encoded data
 	if messageSID == "" || fromNumber == "" || body == "" {
-		bodyParam := r.PostFormValue("Body")
-		if bodyParam == "" {
-			bodyParam = r.PostFormValue("body")
-		}
+		bodyParam := r.PostFormValue("body")
 		if bodyParam != "" {
-			// Remove leading '?' if present
+			// Remove leading '?' and clean up newlines
 			bodyParam = strings.TrimPrefix(bodyParam, "?")
+			bodyParam = strings.ReplaceAll(bodyParam, "\n", "")
 			// Decode URL-encoded body
 			parsed, err := url.ParseQuery(bodyParam)
 			if err != nil {
-				logError("WEBHOOK_INVALID_BODY", fmt.Sprintf("Failed to parse Body parameter: %v, raw: %s", err, bodyParam))
-				http.Error(w, "Invalid Body parameter", http.StatusBadRequest)
-				return
-			}
-			if messageSID == "" {
-				messageSID = parsed.Get("MessageSid")
-				if messageSID == "" {
-					messageSID = parsed.Get("messagesid")
-				}
-			}
-			if fromNumber == "" {
-				fromNumber = parsed.Get("From")
-				if fromNumber == "" {
-					fromNumber = parsed.Get("from")
-				}
-			}
-			if body == "" {
-				body = parsed.Get("Body")
-				if body == "" {
-					body = parsed.Get("body")
-				}
-			}
-		}
-	}
-
-	// Fallback 2: Parse raw request body as URL-encoded data
-	if messageSID == "" || fromNumber == "" || body == "" {
-		// Try parsing the raw body as URL-encoded data
-		bodyParam := strings.TrimPrefix(string(bodyBytes), "?")
-		if bodyParam != "" {
-			parsed, err := url.ParseQuery(bodyParam)
-			if err != nil {
-				logError("WEBHOOK_INVALID_RAW_BODY", fmt.Sprintf("Failed to parse raw body: %v, raw: %s", err, bodyParam))
-				http.Error(w, "Invalid raw body", http.StatusBadRequest)
+				logError("WEBHOOK_INVALID_BODY", fmt.Sprintf("Failed to parse body parameter: %v, raw: %s", err, bodyParam))
+				http.Error(w, "Invalid body parameter", http.StatusBadRequest)
 				return
 			}
 			if messageSID == "" {
@@ -139,7 +105,7 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required fields
 	if messageSID == "" || fromNumber == "" || body == "" {
-		logError("WEBHOOK_NO_INPUT", fmt.Sprintf("Missing required fields: MessageSid=%s, From=%s, Body=%s, raw Body param=%s", messageSID, fromNumber, body, r.PostFormValue("Body")))
+		logError("WEBHOOK_NO_INPUT", fmt.Sprintf("Missing required fields: MessageSid=%s, From=%s, Body=%s, raw body param=%s", messageSID, fromNumber, body, r.PostFormValue("body")))
 		http.Error(w, "Missing required fields", http.StatusBadRequest)
 		return
 	}
