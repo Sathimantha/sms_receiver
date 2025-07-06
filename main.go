@@ -198,7 +198,6 @@ func main() {
 	log.Printf("Starting HTTPS server on port %s", listenPort)
 	if err := http.ListenAndServeTLS(":"+listenPort, certFile, keyFile, loggedRouter); err != nil {
 		logError("SERVER_ERROR", fmt.Sprintf("Failed to start HTTPS server: %v", err))
-		os.Exi
-t(1)
+		os.Exit(1)
 	}
 }
