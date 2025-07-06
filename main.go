@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"github.com/twilio/twilio-go/twiml"
 )
 
 // DB is the global database connection
@@ -58,19 +58,15 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Saved SMS from %s: %s", fromNumber, body)
 
 	// Respond with TwiML to acknowledge webhook
-	response := &twiml.MessagingMessage{
-		Body: "Message received! Thank you.",
-	}
-	twimlResult, err := twiml.Message([]twiml.MessagingVerb{response})
-	if err != nil {
-		log.Printf("Error generating TwiML: %v", err)
-		http.Error(w, "Error generating response", http.StatusInternalServerError)
-		return
-	}
+	// Using manual TwiML to avoid twiml.Message dependency issues
+	twimlResponse := `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>Message received! Thank you.</Message>
+</Response>`
 
 	w.Header().Set("Content-Type", "text/xml")
 	w.WriteHeader(http.StatusOK)
-	_, err = w.Write([]byte(twimlResult))
+	_, err = w.Write([]byte(twimlResponse))
 	if err != nil {
 		log.Printf("Error writing TwiML response: %v", err)
 	}
