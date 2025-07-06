@@ -1,4 +1,4 @@
-sudo systemctl stop hogwarts.service
+sudo systemctl stop twiliosms.service
 git pull
 go build
-sudo systemctl start hogwarts.service
+sudo systemctl start twiliosms.service

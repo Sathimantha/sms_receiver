@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -26,6 +25,11 @@ type SMSMessage struct {
 	ReceivedAt time.Time
 }
 
+// logError logs errors in a structured format
+func logError(errorType, message string) {
+	log.Printf("[%s] %s", errorType, message)
+}
+
 // handleSMS handles incoming SMS webhooks from Twilio
 func handleSMS(w http.ResponseWriter, r *http.Request) {
 	// Extract Twilio webhook parameters
@@ -34,7 +38,7 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 	body := r.FormValue("Body")
 
 	if messageSID == "" || fromNumber == "" || body == "" {
-		log.Printf("Invalid webhook data: MessageSid=%s, From=%s, Body=%s", messageSID, fromNumber, body)
+		logError("WEBHOOK_ERROR", fmt.Sprintf("Invalid webhook data: MessageSid=%s, From=%s, Body=%s", messageSID, fromNumber, body))
 		http.Error(w, "Invalid webhook data", http.StatusBadRequest)
 		return
 	}
@@ -50,7 +54,7 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 	// Save to database
 	err := saveSMS(sms)
 	if err != nil {
-		log.Printf("Failed to save SMS to database: %v", err)
+		logError("DB_SAVE_ERROR", fmt.Sprintf("Failed to save SMS to database: %v", err))
 		http.Error(w, "Failed to save message", http.StatusInternalServerError)
 		return
 	}
@@ -58,7 +62,6 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Saved SMS from %s: %s", fromNumber, body)
 
 	// Respond with TwiML to acknowledge webhook
-	// Using manual TwiML to avoid twiml.Message dependency issues
 	twimlResponse := `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Message>Message received! Thank you.</Message>
@@ -68,7 +71,7 @@ func handleSMS(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write([]byte(twimlResponse))
 	if err != nil {
-		log.Printf("Error writing TwiML response: %v", err)
+		logError("WEBHOOK_RESPONSE_ERROR", fmt.Sprintf("Error writing TwiML response: %v", err))
 	}
 }
 
@@ -84,7 +87,8 @@ func saveSMS(sms SMSMessage) error {
 func main() {
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
+		logError("STARTUP_ERROR", fmt.Sprintf("Error loading .env file: %v", err))
+		os.Exit(1)
 	}
 
 	// Database connection setup
@@ -96,30 +100,25 @@ func main() {
 	listenPort := os.Getenv("LISTEN_PORT")
 
 	if dbUser == "" || dbPass == "" || dbHost == "" || dbPort == "" || dbName == "" || listenPort == "" {
-		log.Fatal("Missing required environment variables")
+		logError("CONFIG_ERROR", "Missing required environment variables")
+		os.Exit(1)
 	}
 
-	// MySQL configuration
-	cfg := mysql.Config{
-		User:   dbUser,
-		Passwd: dbPass,
-		Net:    "tcp",
-		Addr:   fmt.Sprintf("%s:%s", dbHost, dbPort),
-		DBName: dbName,
-	}
-
-	// Initialize database connection
+	// MySQL connection using DSN from your working program
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", dbUser, dbPass, dbHost, dbPort, dbName)
 	var err error
-	db, err = sql.Open("mysql", cfg.FormatDSN())
+	db, err = sql.Open("mysql", dsn)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logError("DB_CONNECTION_ERROR", fmt.Sprintf("Failed to connect to DB: %v", err))
+		os.Exit(1)
 	}
 	defer db.Close()
 
 	// Test database connection
 	err = db.Ping()
 	if err != nil {
-		log.Fatalf("Database ping failed: %v", err)
+		logError("DB_PING_ERROR", fmt.Sprintf("Database ping failed: %v", err))
+		os.Exit(1)
 	}
 
 	// Initialize router
@@ -132,6 +131,7 @@ func main() {
 	// Start server
 	log.Printf("Starting server on port %s", listenPort)
 	if err := http.ListenAndServe(":"+listenPort, loggedRouter); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		logError("SERVER_ERROR", fmt.Sprintf("Failed to start server: %v", err))
+		os.Exit(1)
 	}
 }
