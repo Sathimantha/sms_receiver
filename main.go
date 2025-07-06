@@ -3,22 +3,92 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"github.com/twilio/twilio-go/twiml"
 )
 
+// DB is the global database connection
 var db *sql.DB
+
+// SMSMessage represents the structure of an SMS message in the database
+type SMSMessage struct {
+	MessageSID string
+	FromNumber string
+	Body       string
+	ReceivedAt time.Time
+}
+
+// handleSMS handles incoming SMS webhooks from Twilio
+func handleSMS(w http.ResponseWriter, r *http.Request) {
+	// Extract Twilio webhook parameters
+	messageSID := r.FormValue("MessageSid")
+	fromNumber := r.FormValue("From")
+	body := r.FormValue("Body")
+
+	if messageSID == "" || fromNumber == "" || body == "" {
+		log.Printf("Invalid webhook data: MessageSid=%s, From=%s, Body=%s", messageSID, fromNumber, body)
+		http.Error(w, "Invalid webhook data", http.StatusBadRequest)
+		return
+	}
+
+	// Create SMS message struct
+	sms := SMSMessage{
+		MessageSID: messageSID,
+		FromNumber: fromNumber,
+		Body:       body,
+		ReceivedAt: time.Now(),
+	}
+
+	// Save to database
+	err := saveSMS(sms)
+	if err != nil {
+		log.Printf("Failed to save SMS to database: %v", err)
+		http.Error(w, "Failed to save message", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Saved SMS from %s: %s", fromNumber, body)
+
+	// Respond with TwiML to acknowledge webhook
+	response := &twiml.MessagingMessage{
+		Body: "Message received! Thank you.",
+	}
+	twimlResult, err := twiml.Message([]twiml.MessagingVerb{response})
+	if err != nil {
+		log.Printf("Error generating TwiML: %v", err)
+		http.Error(w, "Error generating response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/xml")
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write([]byte(twimlResult))
+	if err != nil {
+		log.Printf("Error writing TwiML response: %v", err)
+	}
+}
+
+// saveSMS inserts an SMS message into the database
+func saveSMS(sms SMSMessage) error {
+	query := `
+		INSERT INTO sms_messages (message_sid, from_number, body, received_at)
+		VALUES (?, ?, ?, ?)`
+	_, err := db.Exec(query, sms.MessageSID, sms.FromNumber, sms.Body, sms.ReceivedAt)
+	return err
+}
 
 func main() {
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
-		os.Exit(1)
+		log.Fatalf("Error loading .env file: %v", err)
 	}
 
 	// Database connection setup
@@ -29,77 +99,43 @@ func main() {
 	dbName := os.Getenv("DB_NAME")
 	listenPort := os.Getenv("LISTEN_PORT")
 
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", dbUser, dbPass, dbHost, dbPort, dbName)
+	if dbUser == "" || dbPass == "" || dbHost == "" || dbPort == "" || dbName == "" || listenPort == "" {
+		log.Fatal("Missing required environment variables")
+	}
+
+	// MySQL configuration
+	cfg := mysql.Config{
+		User:   dbUser,
+		Passwd: dbPass,
+		Net:    "tcp",
+		Addr:   fmt.Sprintf("%s:%s", dbHost, dbPort),
+		DBName: dbName,
+	}
+
+	// Initialize database connection
 	var err error
-	db, err = sql.Open("mysql", dsn)
+	db, err = sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
-		os.Exit(1)
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
+	// Test database connection
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Database ping failed: %v", err)
+	}
+
 	// Initialize router
 	r := mux.NewRouter()
+	r.HandleFunc("/sms", handleSMS).Methods("POST")
 
-	// Define route for incoming SMS
-	r.HandleFunc("/sms", smsHandler).Methods("POST")
+	// Enable CORS and logging
+	loggedRouter := handlers.LoggingHandler(os.Stdout, r)
 
-	// Apply CORS to allow all origins
-	corsHandler := handlers.CORS(
-		handlers.AllowedOrigins([]string{"*"}),
-		handlers.AllowedMethods([]string{"POST"}),
-		handlers.AllowedHeaders([]string{"Content-Type"}),
-	)
-
-	// Wrap router with CORS
-	http.Handle("/", corsHandler(r))
-
-	// Start server with TLS
-	certFile := os.Getenv("CERT_FILE")
-	keyFile := os.Getenv("KEY_FILE")
-	if certFile == "" || keyFile == "" || listenPort == "" {
-		os.Exit(1)
+	// Start server
+	log.Printf("Starting server on port %s", listenPort)
+	if err := http.ListenAndServe(":"+listenPort, loggedRouter); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
 	}
-
-	err = http.ListenAndServeTLS(":"+listenPort, certFile, keyFile, nil)
-	if err != nil {
-		os.Exit(1)
-	}
-}
-
-func smsHandler(w http.ResponseWriter, r *http.Request) {
-	// Parse form data
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
-		return
-	}
-
-	// Extract Twilio form fields
-	from := r.PostFormValue("From")
-	body := r.PostFormValue("Body")
-	messageSid := r.PostFormValue("MessageSid")
-
-	// Validate inputs
-	if from == "" || body == "" || messageSid == "" {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
-		return
-	}
-
-	// Basic input sanitization (limit length to prevent abuse)
-	if len(body) > 1600 || len(from) > 15 || len(messageSid) > 50 {
-		http.Error(w, "Input length exceeded", http.StatusBadRequest)
-		return
-	}
-
-	// Store SMS in database
-	query := `INSERT INTO sms_messages (message_sid, from_number, body, received_at) VALUES (?, ?, ?, ?)`
-	timestamp := time.Now().UTC()
-	_, err := db.Exec(query, messageSid, from, body, timestamp)
-	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with simple success message
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Message stored successfully"))
 }
